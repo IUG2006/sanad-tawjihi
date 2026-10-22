@@ -1,0 +1,251 @@
+// Sanad Tawjihi - database (matches the updated ERD)
+// Paste this file into https://dbdiagram.io
+
+Enum user_role {
+  student
+  admin
+}
+
+Enum stream_type {
+  scientific
+  literary
+}
+
+Enum correct_option_type {
+  A
+  B
+  C
+  D
+}
+
+Enum attempt_status {
+  in_progress
+  completed
+  expired
+  cancelled
+}
+
+Enum mistake_status {
+  active
+  mastered
+}
+
+Enum payment_method_type {
+  jawwal_pay
+  palpay
+  bop
+}
+
+Enum wallet_status {
+  pending
+  approved
+  rejected
+}
+
+Enum quiz_scope {
+  lesson
+  unit
+}
+
+Table regions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  code varchar(20) [not null, unique, note: 'west_bank / gaza']
+  name varchar(100) [not null, unique]
+  created_at timestamp [not null, default: `now()`]
+}
+
+Table users {
+  id uuid [pk, default: `gen_random_uuid()`]
+  email varchar(255) [not null, unique]
+  full_name varchar(150)
+  avatar_url varchar(500)
+  role user_role [not null, default: 'student']
+  region_id uuid [not null]
+  stream stream_type
+  points_balance int [not null, default: 0, note: 'CHECK (points_balance >= 0). Changed only on the server']
+  created_at timestamp [not null, default: `now()`]
+}
+
+Table subjects {
+  id uuid [pk, default: `gen_random_uuid()`]
+  name varchar(100) [not null]
+  stream stream_type [not null]
+  created_at timestamp [not null, default: `now()`]
+
+  indexes {
+    (name, stream) [unique]
+  }
+
+  Note: 'MVP has six separate subject records: Mathematics, English, and Arabic for each stream, with independent content trees.'
+}
+
+Table units {
+  id uuid [pk, default: `gen_random_uuid()`]
+  subject_id uuid [not null]
+  title varchar(200) [not null]
+  order_index int [not null]
+  points_cost int [not null, default: 20, note: 'unit quiz price']
+  created_at timestamp [not null, default: `now()`]
+}
+
+Table lessons {
+  id uuid [pk, default: `gen_random_uuid()`]
+  unit_id uuid [not null]
+  title varchar(200) [not null]
+  order_index int [not null, note: 'Unique within each unit; first two lessons are free by order and this is not stored']
+  points_cost int [not null, default: 10, note: 'lesson quiz price']
+  target_region_id uuid [note: 'null means all regions']
+  created_at timestamp [not null, default: `now()`]
+
+  indexes {
+    (unit_id, order_index) [unique]
+  }
+}
+
+Table questions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  lesson_id uuid [not null]
+  question_text text [not null]
+  option_a text [not null]
+  option_b text [not null]
+  option_c text [not null]
+  option_d text [not null]
+  correct_option correct_option_type [not null]
+  explanation text [not null]
+  image_url varchar(500)
+  target_region_id uuid [note: 'null means all regions']
+  created_at timestamp [not null, default: `now()`]
+}
+
+Table exam_templates {
+  id uuid [pk, default: `gen_random_uuid()`]
+  subject_id uuid [not null]
+  title varchar(200) [not null]
+  duration_minutes int [not null, default: 60]
+  points_cost int [not null, default: 30]
+  target_region_id uuid [note: 'null means all regions']
+  created_at timestamp [not null, default: `now()`]
+}
+
+Table exam_questions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  exam_template_id uuid [not null]
+  question_id uuid [not null]
+  question_order int [not null]
+
+  indexes {
+    (exam_template_id, question_id) [unique]
+  }
+}
+
+Table exam_attempts {
+  id uuid [pk, default: `gen_random_uuid()`, note: 'exam session id']
+  user_id uuid [not null]
+  exam_template_id uuid [not null]
+  started_at timestamp [not null]
+  ends_at timestamp [not null, note: 'started_at + duration, calculated on the server']
+  submitted_at timestamp
+  score decimal(5,2) [note: 'percentage 0-100']
+  total_questions int [not null]
+  points_spent int [not null, note: 'price at the time of the attempt']
+  status attempt_status [not null, default: 'in_progress']
+
+  indexes {
+    (user_id, exam_template_id, status)
+    (user_id, status)
+  }
+
+  Note: 'Enforce a partial unique constraint on (user_id, exam_template_id) where status = in_progress. Resuming an existing in_progress attempt does not create an attempt or deduct points.'
+}
+
+Table exam_answers {
+  id uuid [pk, default: `gen_random_uuid()`]
+  exam_attempt_id uuid [not null]
+  question_id uuid [not null]
+  selected_option correct_option_type
+  is_correct boolean
+  is_flagged boolean [not null, default: false, note: 'marked for review']
+  answered_at timestamp
+
+  indexes {
+    (exam_attempt_id, question_id) [unique]
+  }
+}
+
+Table quiz_attempts {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  quiz_type quiz_scope [not null]
+  lesson_id uuid
+  unit_id uuid
+  started_at timestamp [not null]
+  submitted_at timestamp
+  score int
+  total_questions int [not null]
+  points_spent int [not null, default: 0, note: '0 for free lessons']
+
+  checks {
+    `(quiz_type = 'lesson' AND lesson_id IS NOT NULL AND unit_id IS NULL) OR (quiz_type = 'unit' AND unit_id IS NOT NULL AND lesson_id IS NULL)` [name: 'quiz_attempt_scope_matches_type']
+  }
+
+  Note: 'Required: every quiz attempt is stored. Paid attempts deduct the applicable cost per attempt; free guest attempts are stored locally.'
+}
+
+Table mistake_entries {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  question_id uuid [not null]
+  error_count int [not null, default: 1]
+  status mistake_status [not null, default: 'active']
+  last_failed_at timestamp [not null]
+  mastered_at timestamp
+
+  indexes {
+    (user_id, question_id) [unique]
+    (user_id, status)
+  }
+}
+
+Table wallet_transactions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  payment_method payment_method_type [not null]
+  transaction_id varchar(100) [not null]
+  amount_ils decimal(10,2) [not null, note: 'CHECK (amount_ils > 0)']
+  points_credited int [note: 'null until approved']
+  receipt_url varchar(500)
+  status wallet_status [not null, default: 'pending']
+  admin_note text [note: 'required when rejected']
+  reviewed_by uuid [note: 'admin user']
+  created_at timestamp [not null, default: `now()`]
+  reviewed_at timestamp
+
+  Note: 'A rejected request is corrected and resubmitted by updating this same record, preserving its id.'
+
+  indexes {
+    (payment_method, transaction_id) [unique]
+    (status, created_at)
+  }
+}
+
+Ref: users.region_id > regions.id
+Ref: lessons.target_region_id > regions.id
+Ref: questions.target_region_id > regions.id
+Ref: exam_templates.target_region_id > regions.id
+Ref: units.subject_id > subjects.id
+Ref: lessons.unit_id > units.id
+Ref: questions.lesson_id > lessons.id
+Ref: exam_templates.subject_id > subjects.id
+Ref: exam_questions.exam_template_id > exam_templates.id
+Ref: exam_questions.question_id > questions.id
+Ref: exam_attempts.user_id > users.id
+Ref: exam_attempts.exam_template_id > exam_templates.id
+Ref: exam_answers.exam_attempt_id > exam_attempts.id
+Ref: exam_answers.question_id > questions.id
+Ref: quiz_attempts.user_id > users.id
+Ref: quiz_attempts.lesson_id > lessons.id
+Ref: quiz_attempts.unit_id > units.id
+Ref: mistake_entries.user_id > users.id
+Ref: mistake_entries.question_id > questions.id
+Ref: wallet_transactions.user_id > users.id
+Ref: wallet_transactions.reviewed_by > users.id
